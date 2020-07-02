@@ -1,0 +1,1062 @@
+Program KillEmAll;
+uses
+  WinGraph, WinCRT, SysUtils;
+
+const
+  EnemyQuan = 60;  //Массив врагов
+  AnimSpd = 7; //Скорость анимации
+  Phases = 7;
+  Images = 10;
+  MaxShots = 7; //Кол-во выстрелов
+  MaxStars = 200; //Кол-во звёзд
+  Up = #72;
+  Left = #75;
+  Right = #77;
+  Down = #80;
+  Esc = #27;
+  Enter = #13;
+  Space = #32;
+
+type
+  TMaskedImage = record
+    Image, Mask: pointer;
+    Size: longint;
+    Width, Height: integer;
+  end;
+
+  TSprite = array[1..Phases] of TMaskedImage;
+
+  TImage = array[1..Images] of TMaskedImage;
+
+  TTrackTypes = (ttVertical, ttRandomly, ttSnaking); //Перечислимый тип переменной/три вида движения
+
+  TThing = record
+    Sprite: TSprite;
+    X, Y, DX, DY, IncPhase, Phase: integer;
+    Visible, Active: boolean;
+    TrackType: TTrackTypes;
+  end;
+
+  TStar = record
+    X, Y, DX, DY: integer;
+  end;
+
+var
+  WorkPath: string; //Путь работы с файлами, откуда запущен фпц
+  Crusador, Drone, MK, Bullet, Health, Shield, Blast: TSprite;
+  PStage: TImage;
+  Enemys: array[1..EnemyQuan] of TThing; //Массив врагов
+  Shot: array[1..MaxShots] of TThing; //Массив выстрелов
+  Stars: array[1..MaxStars] of TStar; //Массив звёзд
+  EnemyCount, MaxEnemyCount: integer; //Текущее кол-во врагов на стадии, макс. кол-во на стадии
+  Asteroid, Ship: TThing;
+  AnimCD, ShipFlashCD, NewStageCD, BulletSpeed: integer; //Счётчик для скорости, скорость пуль
+  GameOver, GameWin, NewStage: boolean;
+  Button: char; //Кнопка
+  Stage, Lives, STrophys: integer;
+  miPlay, miHelp, miExit: TThing; //Пункты меню
+  Title, GOpict, YWpict, Trophy, QEnemys, HallOfFame: TMaskedImage; //Название, геймовер, ювин: картинки
+  MyFont: smallint;
+
+function Loader(filename: string; var size: longint): pointer;
+var f: file; p: pointer;
+begin
+  Assign(f, filename);
+  {$i-} //Отключение обработки ошибок ввода/вывода компилятором
+  Reset(f, 1);
+  if IOResult <> 0 then //Возвращает код ошибки чтения файла
+  begin
+    OutText('File not found ' + filename);
+    ReadKey;
+    Halt;
+  end;
+  {$i+}//Включение
+   Size:= filesize(f);
+   GetMem(p, size);
+   BlockRead(f, p^, size);
+   Close(f);
+   Loader:= p;
+end;
+
+procedure LoadSprite(var Sprite: TSprite; SpriteName: shortstring; Phase: integer); //Загрузка всех фаз спрайта с масками
+var
+  i: integer;
+  p_size: ^dword; //дв 4 байта, указатель на размеры изо в заголовке бмп-файла
+begin
+  for i:= 1 to Phase do
+  begin
+    Sprite[i].Image:= Loader(WorkPath + 'pictures\' + SpriteName + IntToStr(i) + '.bmp', Sprite[i].Size);
+    p_size:= Sprite[i].Image + 18;
+    Sprite[i].Width:= p_size^; //Из заголовка бмп берём ширину спрайта
+    inc(p_size); //+дв тк высота идёт за шириной
+    Sprite[i].Height:= p_size^; //Из заголовка бмп берём высоту спрайта
+    Sprite[i].Mask:= Loader(WorkPath + 'pictures\' + SpriteName + 'mask' + IntToStr(i) + '.bmp', Sprite[i].Size);
+  end;
+end;
+
+procedure LoadImage(var Image: TImage; ImageName: shortstring);
+var
+  i: integer;
+  p_size: ^dword;
+begin
+  for i:= 1 to Images do
+  begin
+    Image[i].Image:= Loader(WorkPath + 'pictures\' + ImageName + IntToStr(i) + '.bmp', Image[i].Size);
+    p_size:= Image[i].Image + 18;
+    Image[i].Width:= p_size^;
+    inc(p_size);
+    Image[i].Height:= p_size^;
+    Image[i].Mask:= Loader(WorkPath + 'pictures\' + ImageName + 'mask' + IntToStr(i) + '.bmp', Image[i].Size);
+  end;
+end;
+
+procedure ProgInit;
+var
+  i: integer;
+  gd, gm: smallint;
+begin
+  WorkPath:= ExtractFilePath(ParamStr(0)); //Возвращает путь к запущенной программе
+
+  gd:= NoPalette;
+  gm:= mFullScr;
+  InitGraph(gd, gm, 'Kill em ALL!');
+
+  MyFont:= InstallUserFont('Comic Sans MS');
+
+  LoadSprite(Drone, 'drone', 7);
+  LoadSprite(Crusador, 'crusador', 7);
+  LoadSprite(MK, 'mk', 7);
+  LoadSprite(Blast, 'Blast', 7);
+  LoadSprite(Asteroid.Sprite, 'asteroid', 7);
+  LoadSprite(Ship.Sprite, 'ship', 7);
+  LoadSprite(miPlay.Sprite, 'play', 5);
+  LoadSprite(miHelp.Sprite, 'help', 5);
+  LoadSprite(miExit.Sprite, 'exit', 5);
+  LoadImage(PStage, 'stage');
+  Title.Image:= Loader(WorkPath + 'pictures\Title.bmp', Title.Size);
+  Title.Mask:= Loader(WorkPath + 'pictures\Titlemask.bmp', Title.Size);
+  Title.Width:= 800;
+  Title.Height:= 200;
+  GOpict.Image:= Loader(WorkPath + 'pictures\GameOver.bmp', GOpict.Size);
+  GOpict.Mask:= Loader(WorkPath + 'pictures\GameOvermask.bmp', GOpict.Size);
+  GOpict.Width:= 800;
+  GOpict.Height:= 200;
+  YWpict.Image:= Loader(WorkPath + 'pictures\YouWin.bmp', YWpict.Size);
+  YWpict.Mask:= Loader(WorkPath + 'pictures\YouWinmask.bmp', YWpict.Size);
+  YWpict.Width:= 800;
+  YWpict.Height:= 200;
+  Trophy.Image:= Loader(WorkPath + 'pictures\trophy.bmp', Trophy.Size);
+  Trophy.Mask:= Loader(WorkPath + 'pictures\trophymask.bmp', Trophy.Size);
+  Trophy.Width:= 30;
+  Trophy.Height:= 30;
+  QEnemys.Image:= Loader(WorkPath + 'pictures\qenemys.bmp', QEnemys.Size);
+  QEnemys.Mask:= Loader(WorkPath + 'pictures\qenemysmask.bmp', QEnemys.Size);
+  QEnemys.Width:= 90;
+  QEnemys.Height:= 25;
+  HallOfFame.Image:= Loader(WorkPath + 'pictures\halloffame.bmp', HallOfFame.Size);
+  HallOfFame.Mask:= Loader(WorkPath + 'pictures\halloffamemask.bmp', HallOfFame.Size);
+  HallOfFame.Width:= 500;
+  HallOfFame.Height:= 100;
+  Bullet[1].Image:= Loader(WorkPath + 'pictures\shot.bmp', Bullet[1].Size);
+  Bullet[1].Mask:= Loader(WorkPath + 'pictures\shotmask.bmp', Bullet[1].Size);
+  Bullet[1].Width:= 12;
+  Bullet[1].Height:= 25;
+  Health[1].Image:= Loader(WorkPath + 'pictures\health.bmp', Health[1].Size);
+  Health[1].Mask:= Loader(WorkPath + 'pictures\healthmask.bmp', Health[1].Size);
+  Health[1].Width:= 30;
+  Health[1].Height:= 30;
+
+  miPlay.X:= (GetMaxX div 2) - (miPlay.Sprite[1].Width div 2);
+  miPlay.Y:= (GetMaxY div 2) - (3 * miPlay.Sprite[1].Height + 2 * 20) div 2;
+  miPlay.Phase:= 3;
+  miPlay.IncPhase:= 1;
+  miPlay.Active:= true;
+  miHelp.X:= (GetMaxX div 2) - (miHelp.Sprite[1].Width div 2);
+  miHelp.Y:= (GetMaxY div 2) - (miHelp.Sprite[1].Height div 2);
+  miHelp.Phase:= 3;
+  miHelp.IncPhase:= 1;
+  miHelp.Active:= false;
+  miExit.X:= (GetMaxX div 2) - (miExit.Sprite[1].Width div 2);
+  miExit.Y:= (GetMaxY div 2) + (3 * miPlay.Sprite[1].Height + 2 * 20) div 2 - miExit.Sprite[1].Height;
+  miExit.Phase:= 3;
+  miExit.IncPhase:= 1;
+  miExit.Active:= false;
+
+  for i:= 1 to MaxShots do Shot[i].Sprite:= Bullet;
+
+  for i:= 1 to MaxStars do
+  begin
+    Stars[i].X:= random(GetMaxX);
+    Stars[i].Y:= random(GetMaxY);
+    Stars[i].DX:= 0;
+    Stars[i].DY:= random(3) + 1;
+  end;
+
+  UpdateGraph(UpdateOff); //Включение двойной буферизации
+end;
+
+procedure InitScene;
+var
+  i: integer;
+  WidthT, HeightT: integer;
+begin
+  Randomize;
+  NewStageCD:= 200;
+  NewStage:= true;
+  case Stage of
+    1:
+    begin
+      EnemyCount:= 10;
+      MaxEnemyCount:= EnemyCount;
+      for i:= 1 to EnemyCount do
+      begin
+        Enemys[i].Sprite:= Drone;
+        Enemys[i].X:= random(GetMaxX - Enemys[i].Sprite[1].Width);
+        Enemys[i].Y:= random(-3000) - Enemys[i].Sprite[1].Height;
+        Enemys[i].TrackType:= ttVertical;
+        Enemys[i].Visible:= false;
+        Enemys[i].Active:= true;
+        Enemys[i].DX:= 0;
+        Enemys[i].DY:= random(4) + 1;
+        Enemys[i].Phase:= random(6) + 1;
+        Enemys[i].IncPhase:= 1;
+      end;
+      Asteroid.Visible:= false;
+      Asteroid.X:= random(GetMaxX - Asteroid.Sprite[1].Width);
+      Asteroid.Y:= random(-8000) - Asteroid.Sprite[1].Height;
+      Asteroid.DX:= 0;
+      Asteroid.DY:= random(3) + 2;
+      Asteroid.Phase:= random(6) + 1;
+      Asteroid.IncPhase:= 1;
+    end;
+    2:
+    begin
+      EnemyCount:= 14;
+      MaxEnemyCount:= EnemyCount;
+      for i:= 1 to (EnemyCount div 2) do
+      begin
+        Enemys[i*2].Sprite:= Drone;
+        Enemys[i*2].X:= random(GetMaxX - Enemys[i*2].Sprite[1].Width);
+        Enemys[i*2].Y:= random(-3000) - Enemys[i*2].Sprite[1].Height;
+        Enemys[i*2].TrackType:= ttVertical;
+        Enemys[i*2].Visible:= false;
+        Enemys[i*2].Active:= true;
+        Enemys[i*2].DX:= 0;
+        Enemys[i*2].DY:= random(4) + 1;
+        Enemys[i*2].Phase:= random(6) + 1;
+        Enemys[i*2].IncPhase:= 1;
+
+        Enemys[i*2-1].Sprite:= Crusador;
+        Enemys[i*2-1].X:= random(GetMaxX - Enemys[i*2-1].Sprite[1].Width);
+        Enemys[i*2-1].Y:= random(-4000) - Enemys[i*2-1].Sprite[1].Height;
+        Enemys[i*2-1].TrackType:= ttSnaking;
+        Enemys[i*2-1].Visible:= false;
+        Enemys[i*2-1].Active:= true;
+        Enemys[i*2-1].DX:= random(3) + 1;
+        Enemys[i*2-1].DY:= random(2) + 1;
+        Enemys[i*2-1].Phase:= random(6) + 1;
+        Enemys[i*2-1].IncPhase:= 1;
+      end;
+      Asteroid.Visible:= false;
+      Asteroid.X:= random(GetMaxX - Asteroid.Sprite[1].Width);
+      Asteroid.Y:= random(-7000) - Asteroid.Sprite[1].Height;
+      Asteroid.DX:= 0;
+      Asteroid.DY:= random(4) + 2;
+      Asteroid.Phase:= random(6) + 1;
+      Asteroid.IncPhase:= 1;
+    end;
+    3:
+    begin
+      EnemyCount:= 21;
+      MaxEnemyCount:= EnemyCount;
+      for i:= 1 to (EnemyCount div 3) do
+      begin
+        Enemys[i*3].Sprite:= Drone;
+        Enemys[i*3].X:= random(GetMaxX - Enemys[i*3].Sprite[1].Width);
+        Enemys[i*3].Y:= random(-3000) - Enemys[i*3].Sprite[1].Height;
+        Enemys[i*3].TrackType:= ttVertical;
+        Enemys[i*3].Visible:= false;
+        Enemys[i*3].Active:= true;
+        Enemys[i*3].DX:= 0;
+        Enemys[i*3].DY:= random(4) + 1;
+        Enemys[i*3].Phase:= random(6) + 1;
+        Enemys[i*3].IncPhase:= 1;
+
+        Enemys[i*3-1].Sprite:= Crusador;
+        Enemys[i*3-1].X:= random(GetMaxX - Enemys[i*3-1].Sprite[1].Width);
+        Enemys[i*3-1].Y:= random(-4000) - Enemys[i*3-1].Sprite[1].Height;
+        Enemys[i*3-1].TrackType:= ttSnaking;
+        Enemys[i*3-1].Visible:= false;
+        Enemys[i*3-1].Active:= true;
+        Enemys[i*3-1].DX:= random(4) + 1;
+        Enemys[i*3-1].DY:= random(3) + 1;
+        Enemys[i*3-1].Phase:= random(6) + 1;
+        Enemys[i*3-1].IncPhase:= 1;
+
+        Enemys[i*3-2].Sprite:= MK;
+        Enemys[i*3-2].X:= random(GetMaxX - Enemys[i*3-2].Sprite[1].Width);
+        Enemys[i*3-2].Y:= random(-5000) - Enemys[i*3-2].Sprite[1].Height;
+        Enemys[i*3-2].TrackType:= ttRandomly;
+        Enemys[i*3-2].Visible:= false;
+        Enemys[i*3-2].Active:= true;
+        Enemys[i*3-2].DX:= 0;
+        Enemys[i*3-2].DY:= 0;
+        Enemys[i*3-2].Phase:= random(6) +1;
+        Enemys[i*3-2].IncPhase:= 1;
+      end;
+      Asteroid.Visible:= false;
+      Asteroid.X:= random(GetMaxX - Asteroid.Sprite[1].Width);
+      Asteroid.Y:= random(-6000) - Asteroid.Sprite[1].Height;
+      Asteroid.DX:= 0;
+      Asteroid.DY:= random(5) + 2;
+      Asteroid.Phase:= random(6) + 1;
+      Asteroid.IncPhase:= 1;
+    end
+    else
+    begin
+      EnemyCount:= Stage * 6;
+      MaxEnemyCount:= EnemyCount;
+      for i:= 1 to (EnemyCount div 3) do
+      begin
+        Enemys[i*3].Sprite:= Drone;
+        Enemys[i*3].X:= random(GetMaxX - Enemys[i*3].Sprite[1].Width);
+        Enemys[i*3].Y:= random(-Stage * 800) - Enemys[i*3].Sprite[1].Height;
+        Enemys[i*3].TrackType:= ttVertical;
+        Enemys[i*3].Visible:= false;
+        Enemys[i*3].Active:= true;
+        Enemys[i*3].DX:= 0;
+        Enemys[i*3].DY:= random(4) + 2;
+        Enemys[i*3].Phase:= random(6) + 2;
+        Enemys[i*3].IncPhase:= 1;
+
+        Enemys[i*3-1].Sprite:= Crusador;
+        Enemys[i*3-1].X:= random(GetMaxX - Enemys[i*3-1].Sprite[1].Width);
+        Enemys[i*3-1].Y:= random(-Stage * 1000) - Enemys[i*3-1].Sprite[1].Height;
+        Enemys[i*3-1].TrackType:= ttSnaking;
+        Enemys[i*3-1].Visible:= false;
+        Enemys[i*3-1].Active:= true;
+        Enemys[i*3-1].DX:= random(5) + 2;
+        Enemys[i*3-1].DY:= random(4) + 2;
+        Enemys[i*3-1].Phase:= random(6) + 1;
+        Enemys[i*3-1].IncPhase:= 1;
+
+        Enemys[i*3-2].Sprite:= MK;
+        Enemys[i*3-2].X:= random(GetMaxX - Enemys[i*3-2].Sprite[1].Width);
+        Enemys[i*3-2].Y:= random(-Stage * 1200) - Enemys[i*3-2].Sprite[1].Height;
+        Enemys[i*3-2].TrackType:= ttRandomly;
+        Enemys[i*3-2].Visible:= false;
+        Enemys[i*3-2].Active:= true;
+        Enemys[i*3-2].DX:= 0;
+        Enemys[i*3-2].DY:= 0;
+        Enemys[i*3-2].Phase:= random(6) +1;
+        Enemys[i*3-2].IncPhase:= 1;
+      end;
+      Asteroid.Visible:= false;
+      Asteroid.X:= random(GetMaxX - Asteroid.Sprite[1].Width);
+      Asteroid.Y:= random(-5500) - Asteroid.Sprite[1].Height;
+      Asteroid.DX:= 0;
+      Asteroid.DY:= random(5) + 2;
+      Asteroid.Phase:= random(6) + 1;
+      Asteroid.IncPhase:= 1;
+    end;
+  end;
+end;
+
+procedure GameInit;
+var
+  i: integer;
+begin
+  Ship.X:= (GetMaxX div 2) - (Ship.Sprite[1].Width div 2);
+  Ship.Y:= (GetMaxY - Ship.Sprite[1].Height);
+  Ship.DX:= 15;
+  Ship.DY:= 15;
+  Ship.Phase:= 1;
+  Ship.IncPhase:= 1;
+  Ship.Active:= true;
+  Ship.Visible:= true;
+  Lives:= 3;
+  STrophys:= 0;
+
+  BulletSpeed:= 5;
+  for i:= 1 to MaxShots do
+  begin
+    Shot[i].Visible:= false;
+    Shot[i].DY:= BulletSpeed;
+  end;
+
+  GameOver:= false;
+  GameWin:= false;
+
+  Stage:= 1;
+  InitScene;
+end;
+
+procedure DrawStat;
+var
+  i, X, Y: integer;
+begin
+  X:= 5;
+  Y:= 5;
+  for i:= 1 to Lives do
+  begin
+    PutImage(X, Y, Health[1].Mask^, AndPut);
+    PutImage(X, Y, Health[1].Image^, OrPut);
+    inc(X, Health[1].Width + 2);
+  end;
+  PutImage(5, 55, Trophy.Mask^, AndPut);
+  PutImage(5, 55, Trophy.Image^, OrPut);
+  SetTextStyle(0, 0, 3);
+  SetColor(Yellow);
+  OutTextXY(45, 60, IntToStr(STrophys));
+
+  PutImage(5, 105, QEnemys.Mask^, AndPut);
+  PutImage(5, 105, QEnemys.Image^, OrPut);
+  SetTextStyle(0, 0, 3);
+  SetColor(Orange);
+  OutTextXY(105, 105, IntToStr(EnemyCount));
+end;
+
+procedure DrawStars;
+var
+  i: integer;
+begin
+  for i:= 1 to MaxStars do
+  begin
+    PutPixel(Stars[i].X, Stars[i].Y, white);
+  end;
+end;
+
+procedure DrawScene;
+var
+  i: integer;
+begin
+  ClearDevice;
+  DrawStars;
+  DrawStat;
+  if NewStage then
+  begin
+    PutImage(GetMaxX div 2 - PStage[Stage].Width div 2, GetMaxY div 2 - PStage[Stage].Height div 2, PStage[Stage].Mask^, AndPut);
+    PutImage(GetMaxX div 2 - PStage[Stage].Width div 2, GetMaxY div 2 - PStage[Stage].Height div 2, PStage[Stage].Image^, OrPut);
+    dec(NewStageCD);
+    if NewStageCD = 0 then NewStage:= false;
+  end;
+  inc(AnimCD);
+  for i:= 1 to MaxEnemyCount do
+  begin
+    if Enemys[i].Visible then
+    begin
+      PutImage(Enemys[i].X, Enemys[i].Y, Enemys[i].Sprite[Enemys[i].Phase].Mask^, AndPut);
+      PutImage(Enemys[i].X, Enemys[i].Y, Enemys[i].Sprite[Enemys[i].Phase].Image^, OrPut);
+      if AnimCD = AnimSpd then
+      begin
+        if Enemys[i].Active then
+        begin
+          Enemys[i].Phase:= Enemys[i].Phase + Enemys[i].IncPhase;
+          if Enemys[i].Phase = 0 then
+          begin
+            Enemys[i].IncPhase:= 1;
+            Enemys[i].Phase:= 1;
+          end;
+          if Enemys[i].Phase > Phases then
+          begin
+            Enemys[i].IncPhase:= -1;
+            dec(Enemys[i].Phase);
+          end;
+        end
+        else
+        begin
+          Inc(Enemys[i].Phase);
+          if Enemys[i].Phase = 8 then
+          begin
+            Enemys[i].Visible:= false;
+            dec(EnemyCount);
+          end;
+        end;
+      end;
+    end;
+  end;
+
+  if Asteroid.Visible then
+  begin
+    PutImage(Asteroid.X, Asteroid.Y, Asteroid.Sprite[Asteroid.Phase].Mask^, AndPut);
+    PutImage(Asteroid.X, Asteroid.Y, Asteroid.Sprite[Asteroid.Phase].Image^, OrPut);
+    if AnimCD = AnimSpd then
+    begin
+      inc(Asteroid.Phase);
+      if Asteroid.Phase > Phases then
+      Asteroid.Phase:= 1;
+    end;
+  end;
+
+  if Ship.Visible then
+  begin
+    PutImage(Ship.X, Ship.Y, Ship.Sprite[Ship.Phase].Mask^, AndPut);
+    PutImage(Ship.X, Ship.Y, Ship.Sprite[Ship.Phase].Image^, OrPut);
+  end;
+  if AnimCD = AnimSpd then
+  begin
+    if not Ship.Active then
+    begin
+      Ship.Visible:= not Ship.Visible;
+      dec(ShipFlashCD);
+      if ShipFlashCD = 0 then
+      begin
+        Ship.Active:= true;
+        Ship.Visible:= true;
+      end;
+    end;
+    Ship.Phase:= Ship.Phase + Ship.IncPhase;
+    if Ship.Phase = 0 then
+    begin
+      Ship.IncPhase:= 1;
+      Ship.Phase:= 1;
+    end;
+    if Ship.Phase > Phases then
+    begin
+      Ship.IncPhase:= -1;
+      dec(Ship.Phase);
+    end;
+  end;
+
+  for i:= 1 to MaxShots do
+  begin
+    if Shot[i].Visible then
+    begin
+      PutImage(Shot[i].X, Shot[i].Y, Shot[i].Sprite[1].Mask^, AndPut);
+      PutImage(Shot[i].X, Shot[i].Y, Shot[i].Sprite[1].Image^, OrPut);
+    end;
+  end;
+
+  if AnimCD = AnimSpd then AnimCD:= 0;
+  UpdateGraph(UpdateNow);
+  Delay(10);
+end;
+
+procedure Shooting;
+var
+  i: integer;
+begin
+  for i:= 1 to MaxShots do
+  begin
+    if not Shot[i].Visible then
+    begin
+      Shot[i].Visible:= true;
+      Shot[i].X:= (Ship.X + (Ship.Sprite[1].Width div 2) - (Bullet[1].Width div 2));
+      Shot[i].Y:= Ship.Y + 1;
+      break;
+    end;
+  end;
+end;
+
+procedure CheckCtrl;
+begin
+  if not keypressed then exit;
+
+  Button:= ReadKey;
+    if Button = #0 then
+    begin
+      Button:= ReadKey;
+      case Button of
+        Up: if Ship.Y >= Ship.DY then
+          dec(Ship.Y, Ship.DY);
+        Left: if Ship.X >= Ship.DX then
+          dec(Ship.X, Ship.DX);
+        Down: if Ship.Y <= GetMaxY - Ship.DY - Ship.Sprite[1].Height then
+          inc(Ship.Y, Ship.DY);
+        Right: if Ship.X <= GetMaxX - Ship.DX - Ship.Sprite[1].Width then
+          inc(Ship.X, Ship.DX);
+      end;
+    end;
+
+    if Button = Space then Shooting;
+    if Button = Esc then GameOver:= true;
+    if Button = #93 then EnemyCount:= 0; //Ъ - переход на сл. стадию
+end;
+
+procedure Moving;
+var
+  i: integer;
+begin
+  Randomize;
+  for i:= 1 to MaxStars do
+  begin
+    inc(Stars[i].X, Stars[i].DX);
+    inc(Stars[i].Y, Stars[i].DY);
+    if Stars[i].X > GetMaxX then Stars[i].X:= 0;
+    if Stars[i].Y > GetMaxY then Stars[i].Y:= 0;
+  end;
+
+  for i:= 1 to MaxEnemyCount do
+  begin
+    if Enemys[i].TrackType = ttVertical then
+    begin
+      if (Enemys[i].Active or Enemys[i].Visible) then
+      begin
+        inc(Enemys[i].X, Enemys[i].DX);
+        inc(Enemys[i].Y, Enemys[i].DY);
+        if Enemys[i].Y > (0 - Enemys[i].Sprite[1].Height) then Enemys[i].Visible:= true;
+        if Enemys[i].Y > GetMaxY then
+        begin
+          Enemys[i].X:= random(GetMaxX - Enemys[i].Sprite[1].Width);
+          Enemys[i].Y:= random(-3000) - Enemys[i].Sprite[1].Height;
+          Enemys[i].Visible:= false;
+        end;
+      end;
+    end
+    else if Enemys[i].TrackType = ttRandomly then
+    begin
+      if (Enemys[i].Active or Enemys[i].Visible) then
+      begin
+        if random(20) = 1 then Enemys[i].DX:= random(10) - 5;
+        if random(20) = 1 then Enemys[i].DY:= random(3) + 1;
+        inc(Enemys[i].X, Enemys[i].DX);
+        inc(Enemys[i].Y, Enemys[i].DY);
+        if Enemys[i].Y > (0 - Enemys[i].Sprite[1].Height) then Enemys[i].Visible:= true;
+        if Enemys[i].X <= 0 then Enemys[i].DX:= abs(Enemys[i].DX);
+        if Enemys[i].X >= (GetMaxX - Enemys[i].Sprite[1].Width) then Enemys[i].DX:= -Enemys[i].DX;
+        if Enemys[i].Y > GetMaxY then
+        begin
+          Enemys[i].X:= random(GetMaxX - Enemys[i].Sprite[1].Width);
+          Enemys[i].Y:= random(-3000) - Enemys[i].Sprite[1].Height;
+          Enemys[i].Visible:= false;
+        end;
+      end;
+    end
+    else if Enemys[i].TrackType = ttSnaking then
+    begin
+      if (Enemys[i].Active or Enemys[i].Visible) then
+      begin
+        inc(Enemys[i].X, Enemys[i].DX);
+        inc(Enemys[i].Y, Enemys[i].DY);
+        if Enemys[i].Y > (0 - Enemys[i].Sprite[1].Height) then Enemys[i].Visible:= true;
+        if Enemys[i].X <= 0 then Enemys[i].DX:= -Enemys[i].DX;
+        if Enemys[i].X >= (GetMaxX - Enemys[i].Sprite[1].Width) then Enemys[i].DX:= -Enemys[i].DX;
+        if Enemys[i].Y > GetMaxY then
+        begin
+          Enemys[i].X:= random(GetMaxX - Enemys[i].Sprite[1].Width);
+          Enemys[i].Y:= random(-3000) - Enemys[i].Sprite[1].Height;
+          Enemys[i].Visible:= false;
+        end;
+      end;
+    end;
+  end;
+
+  inc(Asteroid.X, Asteroid.DX);
+  inc(Asteroid.Y, Asteroid.DY);
+  if Asteroid.Y > (0 - Asteroid.Sprite[1].Height) then Asteroid.Visible:= true;
+  if Asteroid.Y > GetMaxY then
+  begin
+    Asteroid.X:= random(GetMaxX - Asteroid.Sprite[1].Width);
+    Asteroid.Y:= random(-6500) - Asteroid.Sprite[1].Height;
+    Asteroid.Visible:= false;
+  end;
+
+  for i:= 1 to MaxShots do
+  begin
+    if Shot[i].Visible then dec(Shot[i].Y, Shot[i].DY);
+    if Shot[i].Y < (0 - Bullet[1].Height) then Shot[i].Visible:= false;
+  end;
+end;
+
+procedure CheckCollision; //Проверка коллизий (столкновений) всего.
+var
+  i, i1: integer;
+
+  function Collised(Thing1, Thing2: TThing): boolean;
+  begin
+    Collised:= (((Thing1.X + Thing1.Sprite[1].Width) >= Thing2.X) and (Thing1.X <= (Thing2.X + Thing2.Sprite[1].Width)) and
+               ((Thing1.Y + Thing1.Sprite[1].Height) >= Thing2.Y) and (Thing1.Y <= (Thing2.Y + Thing2.Sprite[1].Height)));
+  end;
+
+begin
+  for i:= 1 to MaxEnemyCount do
+  begin
+    if (Enemys[i].Visible and Enemys[i].Active) then
+    begin
+      for i1:= 1 to MaxShots do
+      begin
+        if Shot[i1].Visible then
+        begin
+          if Collised(Enemys[i], Shot[i1]) then
+          begin
+            if Enemys[i].TrackType = ttVertical then inc(STrophys, 1);
+            if Enemys[i].TrackType = ttSnaking then inc(STrophys, 3);
+            if Enemys[i].TrackType = ttRandomly then inc(STrophys, 5);
+            Enemys[i].Sprite:= Blast;
+            Enemys[i].Phase:= 1;
+            Enemys[i].TrackType:= ttVertical;
+            Enemys[i].DX:= 0;
+            Enemys[i].Active:= false;
+            Shot[i1].Visible:= false;
+            break;
+          end;
+        end;
+      end;
+
+      if (Ship.Active and Enemys[i].Active) then
+      begin
+        if Collised(Enemys[i], Ship) then
+        begin
+          if Enemys[i].TrackType = ttVertical then inc(STrophys, 1);
+          if Enemys[i].TrackType = ttSnaking then inc(STrophys, 3);
+          if Enemys[i].TrackType = ttRandomly then inc(STrophys, 5);
+          Enemys[i].Sprite:= Blast;
+          Enemys[i].Phase:= 1;
+          Enemys[i].TrackType:= ttVertical;
+          Enemys[i].DX:= 0;
+          Enemys[i].Active:= false;
+          dec(Lives);
+          Ship.Active:= false;
+          ShipFlashCD:= 15;
+        end;
+      end;
+    end;
+  end;
+
+  if Asteroid.Visible then
+  begin
+    if Ship.Active then
+    begin
+      if Collised(Asteroid, Ship) then
+      begin
+        dec(Lives);
+        Ship.Active:= false;
+        ShipFlashCD:= 15;
+      end;
+    end;
+
+    for i:= 1 to MaxShots do
+    begin
+      if Shot[i].Visible then Shot[i].Visible:= not Collised(Asteroid, Shot[i]);
+    end;
+  end;
+
+  if Lives = 0 then GameOver:= true;
+
+  if EnemyCount = 0 then
+  begin
+    inc(Stage);
+    if Stage = 11 then
+    begin
+      GameOver:= true;
+      GameWin:= true;
+      Exit;
+    end;
+    if Lives < 3 then inc(Lives);
+    InitScene;
+  end;
+end;
+
+procedure TopScores;
+  type
+    ScoreRec = record
+    Name: string[20];
+    Score: integer;
+    end;
+  var
+    ScoreRecFile: file of ScoreRec;
+    Recs: array[1..10] of ScoreRec;
+    Tmp: ScoreRec;
+    i, i1, i2, TW, TH: integer;
+begin
+  i:= 1;
+  Assign(ScoreRecFile, WorkPath + 'scores.dat');
+  Reset(ScoreRecFile);
+  while not eof(ScoreRecFile) do
+  begin
+    Read(ScoreRecFile, Recs[i]);
+    inc(i);
+  end;
+  Close(ScoreRecFile);
+  for i:= 1 to 10 do
+  begin
+    if STrophys > Recs[i].Score then
+    begin
+      UpdateGraph(UpdateOn);
+      ClearDevice;
+      TW:= TextWidth('Enter name: ');
+      TH:= TextHeight('Enter name: ');
+      OutTextXY(GetMaxX div 2 - TW div 2, GetMaxY div 2 - TH div 2, 'Enter name: ');
+      ReadBuf(Recs[10].Name, 20);
+      ClearDevice;
+      Recs[10].Score:= STrophys;
+
+      for i1:= 1 to 10 - 1 do
+        for i2:= 1 to 10 - i1 do
+          if Recs[i2].Score < Recs[i2 + 1].Score then
+            begin
+              Tmp:= Recs[i2];
+              Recs[i2]:= Recs[i2 + 1];
+              Recs[i2 + 1]:= Tmp;
+            end;
+      ReWrite(ScoreRecFile);
+      for i1:= 1 to 10 do write(ScoreRecFile, Recs[i1]);
+      Close(ScoreRecFile);
+      UpdateGraph(UpdateOff);
+      break;
+    end;
+  end;
+  repeat
+    ClearDevice;
+    DrawStars;
+    for i:= 1 to MaxStars do
+    begin
+      inc(Stars[i].X, Stars[i].DX);
+      inc(Stars[i].Y, Stars[i].DY);
+      if Stars[i].X > GetMaxX then Stars[i].X:= 0;
+      if Stars[i].Y > GetMaxY then Stars[i].Y:= 0;
+    end;
+    PutImage(GetMaxX div 2 - HallOfFame.Width div 2, 0, HallOfFame.Mask^, AndPut);
+    PutImage(GetMaxX div 2 - HallOfFame.Width div 2, 0, HallOfFame.Image^, OrPut);
+    PutImage(GetMaxX div 2 - HallOfFame.Width div 2 - Trophy.Width, HallOfFame.Height div 2 - Trophy.Height div 2, Trophy.Mask^, AndPut);
+    PutImage(GetMaxX div 2 - HallOfFame.Width div 2 - Trophy.Width, HallOfFame.Height div 2 - Trophy.Height div 2, Trophy.Image^, OrPut);
+    PutImage(GetMaxX div 2 + HallOfFame.Width div 2, HallOfFame.Height div 2 - Trophy.Height div 2, Trophy.Mask^, AndPut);
+    PutImage(GetMaxX div 2 + HallOfFame.Width div 2, HallOfFame.Height div 2 - Trophy.Height div 2, Trophy.Image^, OrPut);
+    for i:= 1 to 10 do
+    begin
+      TH:= TextHeight(Recs[i].Name);
+      SetTextStyle(MyFont, 0, 4);
+      OutTextXY(GetMaxX div 3, GetMaxY div 4 + (TH + 10) * i, Recs[i].Name);
+      OutTextXY(GetMaxX div 3 * 2 - 20, GetMaxY div 4 + (TH + 10) * i, IntToStr(Recs[i].Score));
+    end;
+    UpdateGraph(UpdateNow);
+    Delay(10);
+  until
+    keypressed;
+end;
+
+procedure Game;
+begin
+  repeat
+    DrawScene;
+    CheckCtrl;
+    Moving;
+    CheckCollision;
+  until GameOver;
+
+  NewStage:= false;
+
+  if GameWin then
+  begin
+    Ship.Visible:= false;
+    DrawScene;
+    PutImage(GetMaxX div 2 - YWpict.Width div 2, GetMaxY div 2 - YWpict.Height div 2, YWpict.Mask^, AndPut);
+    PutImage(GetMaxX div 2 - YWpict.Width div 2, GetMaxY div 2 - YWpict.Height div 2, YWpict.Image^, OrPut);
+    UpdateGraph(UpdateNow);
+    Delay(2300);
+  end
+  else
+  begin
+    Ship.Visible:= false;
+    DrawScene;
+    PutImage(GetMaxX div 2 - GOpict.Width div 2, GetMaxY div 2 - GOpict.Height div 2, GOpict.Mask^, AndPut);
+    PutImage(GetMaxX div 2 - GOpict.Width div 2, GetMaxY div 2 - GOpict.Height div 2, GOpict.Image^, OrPut);
+    UpdateGraph(UpdateNow);
+    Delay(2300);
+  end;
+
+  TopScores;
+end;
+
+procedure Help;
+  var
+    HelpFile: text;
+    Strings: string;
+    StringY, StringHeight, StringWidth: integer;
+    WidthTH, HeightTH: integer;
+begin
+  ClearDevice;
+  Assign(HelpFile, WorkPath + 'help.txt');
+  Reset(HelpFile);
+  SetColor(White);
+  SetTextStyle(0, 0, 3);
+  StringY:= 20;
+
+  while not eof(HelpFile) do
+  begin
+    ReadLn(HelpFile, Strings);
+    StringHeight:= TextHeight(Strings);
+    StringWidth:= TextWidth(Strings);
+    OutTextXY(50, StringY, Strings);
+    inc(StringY, StringHeight + 10);
+  end;
+
+  Close(HelpFile);
+  WidthTH:= TextWidth('Press any key to continue');
+  HeightTH:= TextHeight('Press any key to continue');
+  OutTextXY((GetMaxX div 2) - (WidthTH div 2), GetMaxY - HeightTH, 'Press any key to continue');
+  UpdateGraph(UpdateNow);
+  Delay(10);
+  ReadKey;
+end;
+
+procedure Menu;
+  var
+    GameExit: boolean;
+    i: integer;
+  procedure ChangePhase(var MenuItem: TThing);
+  begin
+    if AnimCD = AnimSpd then
+    begin
+      MenuItem.Phase:= MenuItem.Phase + MenuItem.IncPhase;
+      if MenuItem.Phase = 0 then
+      begin
+        MenuItem.IncPhase:= 1;
+        MenuItem.Phase:= 1;
+      end;
+      if MenuItem.Phase > 5 then
+      begin
+        MenuItem.IncPhase:= -1;
+        dec(MenuItem.Phase);
+      end;
+    end;
+  end;
+begin
+  GameExit:= false;
+  repeat
+    ClearDevice;
+    DrawStars;
+    for i:= 1 to MaxStars do
+    begin
+      inc(Stars[i].X, Stars[i].DX);
+      inc(Stars[i].Y, Stars[i].DY);
+      if Stars[i].X > GetMaxX then Stars[i].X:= 0;
+      if Stars[i].Y > GetMaxY then Stars[i].Y:= 0;
+    end;
+    inc(AnimCD);
+    PutImage(GetMaxX div 2 - Title.Width div 2, 0, Title.Mask^, AndPut);
+    PutImage(GetMaxX div 2 - Title.Width div 2, 0, Title.Image^, OrPut);
+    PutImage(miPlay.X, miPlay.Y, miPlay.Sprite[miPlay.Phase].Mask^, AndPut);
+    PutImage(miPlay.X, miPlay.Y, miPlay.Sprite[miPlay.Phase].Image^, OrPut);
+    PutImage(miHelp.X, miHelp.Y, miHelp.Sprite[miHelp.Phase].Mask^, AndPut);
+    PutImage(miHelp.X, miHelp.Y, miHelp.Sprite[miHelp.Phase].Image^, OrPut);
+    PutImage(miExit.X, miExit.Y, miExit.Sprite[miExit.Phase].Mask^, AndPut);
+    PutImage(miExit.X, miExit.Y, miExit.Sprite[miExit.Phase].Image^, OrPut);
+    if miPlay.Active then ChangePhase(miPlay);
+    if miHelp.Active then ChangePhase(miHelp);
+    if miExit.Active then ChangePhase(miExit);
+    if AnimCD = AnimSpd then AnimCD:= 0;
+
+    if keypressed then
+    begin
+      Button:= ReadKey;
+      if Button = #0 then
+      begin
+        Button:= ReadKey;
+        if Button = Up then
+        begin
+          if miPlay.Active then
+          begin
+            miPlay.Active:= false;
+            miPlay.Phase:= 3;
+            miExit.Active:= true;
+          end
+          else if miHelp.Active then
+          begin
+            miHelp.Active:= false;
+            miHelp.Phase:= 3;
+            miPlay.Active:= true;
+          end
+          else
+          begin
+            miExit.Active:= false;
+            miExit.Phase:= 3;
+            miHelp.Active:= true;
+          end;
+        end;
+
+        if Button = Down then
+        begin
+          if miPlay.Active then
+          begin
+            miPlay.Active:= false;
+            miPlay.Phase:= 3;
+            miHelp.Active:= true;
+          end
+          else if miHelp.Active then
+          begin
+            miHelp.Active:= false;
+            miHelp.Phase:= 3;
+            miExit.Active:= true;
+          end
+          else
+          begin
+            miExit.Active:= false;
+            miExit.Phase:= 3;
+            miPlay.Active:= true;
+          end;
+        end;
+      end;
+      if Button = Enter then
+      begin
+        if miPlay.Active then
+        begin
+          GameInit;
+          Game;
+        end;
+        if miHelp.Active then Help;
+        if miExit.Active then GameExit:= true;
+      end;
+    end;
+    UpdateGraph(UpdateNow);
+    Delay(10);
+  until
+    GameExit;
+end;
+
+procedure ProgFinal; //Финализация проги, освобождение памяти
+var
+  i: integer;
+begin
+  for i:= 1 to Phases do
+  begin
+    freemem(Drone[i].Image, Drone[i].Size);
+    freemem(Drone[i].Mask, Drone[i].Size);
+    freemem(Crusador[i].Image, Crusador[i].Size);
+    freemem(Crusador[i].Mask, Crusador[i].Size);
+    freemem(MK[i].Image, MK[i].Size);
+    freemem(MK[i].Mask, MK[i].Size);
+    freemem(Blast[i].Image, Blast[i].Size);
+    freemem(Blast[i].Mask, Blast[i].Size);
+    freemem(Asteroid.Sprite[i].Image, Asteroid.Sprite[i].Size);
+    freemem(Asteroid.Sprite[i].Mask, Asteroid.Sprite[i].Size);
+    freemem(Ship.Sprite[i].Image, Ship.Sprite[i].Size);
+    freemem(Ship.Sprite[i].Mask, Ship.Sprite[i].Size);
+  end;
+  for i:= 1 to Images do
+  begin
+    freemem(PStage[i].Image, PStage[i].Size);
+    freemem(PStage[i].Mask, PStage[i].Size);
+  end;
+  for i:= 1 to 5 do
+  begin
+    freemem(miPlay.Sprite[i].Image, miPlay.Sprite[i].Size);
+    freemem(miPlay.Sprite[i].Mask, miPlay.Sprite[i].Size);
+    freemem(miHelp.Sprite[i].Image, miHelp.Sprite[i].Size);
+    freemem(miHelp.Sprite[i].Mask, miHelp.Sprite[i].Size);
+    freemem(miExit.Sprite[i].Image, miExit.Sprite[i].Size);
+    freemem(miExit.Sprite[i].Mask, miExit.Sprite[i].Size);
+  end;
+  freemem(Bullet[1].Image, Bullet[1].Size);
+  freemem(Bullet[1].Mask, Bullet[1].Size);
+  freemem(Title.Image, Title.Size);
+  freemem(Title.Mask, Title.Size);
+  freemem(GOpict.Image, GOpict.Size);
+  freemem(GOpict.Mask, GOpict.Size);
+  freemem(YWpict.Image, YWpict.Size);
+  freemem(YWpict.Mask, YWpict.Size);
+  freemem(Health[1].Image, Health[1].Size);
+  freemem(Health[1].Mask, Health[1].Size);
+  freemem(Trophy.Image, Trophy.Size);
+  freemem(Trophy.Mask, Trophy.Size);
+  freemem(QEnemys.Image, QEnemys.Size);
+  freemem(QEnemys.Mask, QEnemys.Size);
+  freemem(HallOfFame.Image, HallOfFame.Size);
+  freemem(HallOfFame.Mask, HallOfFame.Size);
+end;
+
+begin
+  ProgInit;
+  Menu;
+  ProgFinal;
+end.

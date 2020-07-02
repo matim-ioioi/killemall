@@ -1,0 +1,19 @@
+KillEmALL!
+
+
+Controls:
+UpArrow - moving your ship to up;
+DownArrow - moving your ship to down;
+RightArrow - moving your ship to right;
+LeftArrow - moving your ship to left;
+Space - shot;
+Esc - exit to menu;
+Enter - select;
+
+
+What you must did?
+You must destroy all enemy ships and avoid asteroids.
+You have 3 lives only.
+
+
+GOOD LUCK, HAVE FUN!!!
